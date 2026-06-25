@@ -1,0 +1,7 @@
+plans/
+examples/
+.codex
+.agents
+tests/
+*.png
+.clangd
