@@ -15,4 +15,9 @@ struct MmapRecordTraits<KlineRecord> {
     static constexpr uint32_t kind = RECORD_KIND_KLINE;
 };
 
+template <>
+struct MmapRecordTraits<CryptoTickRecord> {
+    static constexpr uint32_t kind = 3;
+};
+
 }  // namespace hft_common::ipc

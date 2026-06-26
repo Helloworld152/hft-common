@@ -54,6 +54,17 @@ struct KlineRecord {
     KlineInterval interval;
 };
 
+struct CryptoTickRecord {
+    char symbol[32];
+    uint64_t symbol_id;
+    uint32_t trading_day;
+    uint64_t update_time;
+    double bid_price[5];
+    double bid_size[5];
+    double ask_price[5];
+    double ask_size[5];
+};
+
 struct AccountDetail {
     char broker_id[11];
     char account_id[13];

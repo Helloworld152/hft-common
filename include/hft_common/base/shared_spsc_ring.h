@@ -62,39 +62,26 @@ public:
     SharedSpscRing(const SharedSpscRing&) = delete;
     SharedSpscRing& operator=(const SharedSpscRing&) = delete;
 
-    void open(const std::string& name, uint32_t capacity, bool create, bool unlink_on_close = false) {
+    void create(const std::string& name, uint32_t capacity, bool unlink_on_close = false) {
         close();
 
         name_ = name;
         unlink_on_close_ = unlink_on_close;
-        owner_ = create;
+        owner_ = true;
         capacity_ = static_cast<uint32_t>(detail::round_capacity(capacity));
         const size_t map_size = sizeof(detail::SharedRingHeader) +
                                 sizeof(detail::SharedRingSlot<T>) * capacity_;
 
-        int flags = O_RDWR;
-        if (create) flags |= O_CREAT;
-
-        fd_ = shm_open(name.c_str(), flags, 0666);
+        fd_ = shm_open(name.c_str(), O_RDWR | O_CREAT, 0666);
         if (fd_ < 0) {
             throw std::runtime_error("shm_open failed for " + name + ": " + std::strerror(errno));
         }
-        if (create && ftruncate(fd_, static_cast<off_t>(map_size)) != 0) {
+        if (ftruncate(fd_, static_cast<off_t>(map_size)) != 0) {
             ::close(fd_);
             fd_ = -1;
             throw std::runtime_error("ftruncate failed for " + name + ": " + std::strerror(errno));
         }
-        if (!create) {
-            struct stat st {};
-            if (fstat(fd_, &st) != 0) {
-                ::close(fd_);
-                fd_ = -1;
-                throw std::runtime_error("fstat failed for " + name + ": " + std::strerror(errno));
-            }
-            mapped_size_ = static_cast<size_t>(st.st_size);
-        } else {
-            mapped_size_ = map_size;
-        }
+        mapped_size_ = map_size;
 
         base_ = ::mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (base_ == MAP_FAILED) {
@@ -108,29 +95,64 @@ public:
         slots_ = reinterpret_cast<detail::SharedRingSlot<T>*>(
             static_cast<char*>(base_) + sizeof(detail::SharedRingHeader));
 
-        if (create || header_->magic != 0x4854464757545950ULL) {
-            header_->magic = 0x4854464757545950ULL;
-            header_->version = 1;
-            header_->capacity = capacity_;
-            header_->slot_size = sizeof(T);
-            header_->reserved = 0;
-            header_->producer_ticket.store(0, std::memory_order_relaxed);
-            header_->consumer_ticket.store(0, std::memory_order_relaxed);
-            header_->producer_heartbeat_ns.store(0, std::memory_order_relaxed);
-            header_->consumer_heartbeat_ns.store(0, std::memory_order_relaxed);
-            for (uint32_t i = 0; i < capacity_; ++i) {
-                slots_[i].sequence.store(i, std::memory_order_relaxed);
-            }
-        } else {
-            capacity_ = header_->capacity;
-            if (capacity_ == 0) {
-                close();
-                throw std::runtime_error("invalid capacity for shared ring " + name);
-            }
-            if (header_->slot_size != sizeof(T)) {
-                close();
-                throw std::runtime_error("slot size mismatch for shared ring " + name);
-            }
+        header_->magic = 0x4854464757545950ULL;
+        header_->version = 1;
+        header_->capacity = capacity_;
+        header_->slot_size = sizeof(T);
+        header_->reserved = 0;
+        header_->producer_ticket.store(0, std::memory_order_relaxed);
+        header_->consumer_ticket.store(0, std::memory_order_relaxed);
+        header_->producer_heartbeat_ns.store(0, std::memory_order_relaxed);
+        header_->consumer_heartbeat_ns.store(0, std::memory_order_relaxed);
+        for (uint32_t i = 0; i < capacity_; ++i) {
+            slots_[i].sequence.store(i, std::memory_order_relaxed);
+        }
+    }
+
+    void attach(const std::string& name) {
+        close();
+
+        name_ = name;
+        owner_ = false;
+        unlink_on_close_ = false;
+
+        fd_ = shm_open(name.c_str(), O_RDWR, 0666);
+        if (fd_ < 0) {
+            throw std::runtime_error("shm_open failed for " + name + ": " + std::strerror(errno));
+        }
+
+        struct stat st {};
+        if (fstat(fd_, &st) != 0) {
+            ::close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("fstat failed for " + name + ": " + std::strerror(errno));
+        }
+        mapped_size_ = static_cast<size_t>(st.st_size);
+
+        base_ = ::mmap(nullptr, mapped_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        if (base_ == MAP_FAILED) {
+            ::close(fd_);
+            fd_ = -1;
+            base_ = nullptr;
+            throw std::runtime_error("mmap failed for " + name + ": " + std::strerror(errno));
+        }
+
+        header_ = reinterpret_cast<detail::SharedRingHeader*>(base_);
+        slots_ = reinterpret_cast<detail::SharedRingSlot<T>*>(
+            static_cast<char*>(base_) + sizeof(detail::SharedRingHeader));
+
+        if (header_->magic != 0x4854464757545950ULL) {
+            close();
+            throw std::runtime_error("invalid magic for shared ring " + name);
+        }
+        capacity_ = header_->capacity;
+        if (capacity_ == 0) {
+            close();
+            throw std::runtime_error("invalid capacity for shared ring " + name);
+        }
+        if (header_->slot_size != sizeof(T)) {
+            close();
+            throw std::runtime_error("slot size mismatch for shared ring " + name);
         }
     }
 
